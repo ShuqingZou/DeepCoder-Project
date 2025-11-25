@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import pickle
+import pickle, sys, os
+sys.path.append(os.path.abspath(".."))
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
@@ -14,6 +15,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 import numpy as np
 from pathlib import Path
+
 
 # components same as the successor in enumerative-search
 COMPONENTS = [
@@ -141,7 +143,7 @@ if __name__ == "__main__":
         weight_decay=0.01,
         logging_steps=100,
         save_strategy="epoch",
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1_micro",
         save_total_limit=2,
