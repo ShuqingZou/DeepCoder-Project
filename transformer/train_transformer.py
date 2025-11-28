@@ -9,12 +9,35 @@ from transformers import (
     BertForSequenceClassification, 
     Trainer, 
     TrainingArguments,
-    DataCollatorWithPadding
+    TrainerCallback
 )
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score
 import numpy as np
 from pathlib import Path
+
+class CleanPrinterCallback(TrainerCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if state.is_local_process_zero and logs:
+            if "eval_loss" in logs:
+                epoch = logs.get("epoch", 0)
+                val_loss = logs.get("eval_loss", 0)
+                f1 = logs.get("eval_f1_micro", 0)
+                acc = logs.get("eval_accuracy", 0) 
+
+                print(f"Epoch: {epoch:.2f} | "
+                      f"Val Loss: {val_loss:.4f} | "
+                      f"F1 Micro: {f1:.4f} | "
+                      f"Accuracy: {acc:.4f}")
+
+            elif "loss" in logs:
+                epoch = logs.get("epoch", 0)
+                train_loss = logs.get("loss", 0)
+                lr = logs.get("learning_rate", 0)
+
+                print(f"Epoch: {epoch:.2f} | "
+                      f"Train Loss: {train_loss:.4f} | "
+                      f"LR: {lr:.2e}")
 
 
 # components same as the successor in enumerative-search
@@ -45,24 +68,34 @@ def encode_integer(n):
         return UNK_ID
     return (n - INT_MIN) + VOCAB_OFFSET
 
-def process_entry(entry, max_len = 128):
+def process_entry(entry, max_len=128):
     input_ids = [CLS_ID]
-    for input, output in entry.examples:
-        if isinstance(input, list):
-            input_ids.extend([encode_integer(x) for x in input])
+    for example in entry.examples:
+        inp_val = example.inputs 
+        out_val = example.output
+
+        # input
+        if isinstance(inp_val, list):
+            for x in inp_val:
+                if isinstance(x, list):
+                    input_ids.extend([encode_integer(i) for i in x])
+                else:
+                    input_ids.append(encode_integer(x))
         else:
-            input_ids.append(encode_integer(input))
+            input_ids.append(encode_integer(inp_val))
         input_ids.append(SEP_ID)
 
-        if isinstance(output, list):
-            input_ids.extend([encode_integer(x) for x in output])
+        # output
+        if isinstance(out_val, list):
+            input_ids.extend([encode_integer(x) for x in out_val])
         else:
-            input_ids.append(encode_integer(output))
+            input_ids.append(encode_integer(out_val))
         input_ids.append(SEP_ID)
 
         if len(input_ids) >= max_len:
             input_ids = input_ids[:max_len]
             break
+            
     return input_ids
 
 # Dataset class
@@ -86,7 +119,7 @@ class DeepCoderIntegerDataset(Dataset):
             input_ids = input_ids + [PAD_ID] * padding_length
             attention_mask = attention_mask + [0] * padding_length
 
-        labels = [1.0 if entry.attributes[comp] else 0.0 for comp in COMPONENTS]
+        labels = [1.0 if entry.attribute.get(comp, False) else 0.0 for comp in COMPONENTS]
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -127,7 +160,8 @@ if __name__ == "__main__":
         max_position_embeddings=512,
         num_labels=len(COMPONENTS),
         problem_type="multi_label_classification",
-        hidden_dropout_prob=0.1, 
+        hidden_dropout_prob=0.0, 
+        attention_probs_dropout_prob=0.0,
     )
 
     model = BertForSequenceClassification(config)
@@ -138,8 +172,8 @@ if __name__ == "__main__":
         output_dir=str(model_dir),
         per_device_train_batch_size=32,
         per_device_eval_batch_size=32,
-        learning_rate=1e-4,
-        num_train_epochs=20,
+        learning_rate=1e-3,
+        num_train_epochs=60,
         weight_decay=0.01,
         logging_steps=100,
         save_strategy="epoch",
@@ -148,7 +182,8 @@ if __name__ == "__main__":
         metric_for_best_model="f1_micro",
         save_total_limit=2,
         fp16=torch.cuda.is_available(),
-        dataloader_num_workers=4,
+        dataloader_num_workers=0,
+        disable_tqdm=True,
     )
 
     trainer = Trainer(
@@ -157,6 +192,7 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         compute_metrics=compute_metrics,
+        callbacks=[CleanPrinterCallback()],
     )
 
     print("Starting training...")
