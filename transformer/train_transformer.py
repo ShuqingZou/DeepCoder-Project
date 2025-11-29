@@ -67,9 +67,9 @@ def process_entry(entry, max_len=128):
         out_val = example.output
 
         # input
-        if isinstance(inp_val, list):
+        if isinstance(inp_val, tuple):
             for x in inp_val:
-                if isinstance(x, list):
+                if isinstance(x, tuple):
                     input_ids.extend([encode_integer(i) for i in x])
                 else:
                     input_ids.append(encode_integer(x))
@@ -78,7 +78,7 @@ def process_entry(entry, max_len=128):
         input_ids.append(SEP_ID)
 
         # output
-        if isinstance(out_val, list):
+        if isinstance(out_val, tuple):
             input_ids.extend([encode_integer(x) for x in out_val])
         else:
             input_ids.append(encode_integer(out_val))
@@ -148,11 +148,12 @@ if __name__ == "__main__":
         d = pickle.load(f)
     
     if hasattr(d, "dataset"):
-        all_data = d.dataset
+        all_data = list(d.dataset)
     else:
         all_data = d 
 
     print(f"Total examples loaded")
+
     # seperate train and test set
     train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
     
@@ -183,7 +184,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=32,
         per_device_eval_batch_size=32,
         learning_rate=1e-4,
-        num_train_epochs=5,
+        num_train_epochs=50,
         logging_steps=500,
         weight_decay=0.01,
         save_strategy="epoch",
@@ -206,6 +207,7 @@ if __name__ == "__main__":
     )
 
     print("Starting training...")
+    
     trainer.train()
     
     trainer.save_model(model_dir)
