@@ -1,6 +1,6 @@
 import pickle, sys, os
 sys.path.append(os.path.abspath(".."))
-import tourch
+import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -44,7 +44,7 @@ def encode_integer(n):
         return UNK_ID
     return (n - INT_MIN) + VOCAB_OFFSET
 
-def proccess_io_examples(example, max_length):
+def process_io_examples(example, max_length):
     input_ids = []
     inp_val = example.inputs
     out_val = example.output
@@ -71,7 +71,7 @@ def proccess_io_examples(example, max_length):
         
     return input_ids
 
-class DeepCoderDataset(nn.Module):
+class DeepCoderDataset(Dataset):
     def __init__(self, dataset_entries, max_examples = 5, max_length = 20):
         self.entries = dataset_entries
         self.max_examples = max_examples
@@ -85,12 +85,12 @@ class DeepCoderDataset(nn.Module):
         examples_matrix = []
         cur_example = entry.examples[:self.max_examples]
         for example in cur_example:
-            encode_example = proccess_io_examples(example, self.max_length)
+            encode_example = process_io_examples(example, self.max_length)
             examples_matrix.append(encode_example)
 
         # if fewer than MAX_EXAMPLES
         while len(examples_matrix) < self.max_examples:
-            examples_matrix.append([PAD_ID] * self.example_max_len)
+            examples_matrix.append([PAD_ID] * self.max_length)
 
         labels = [1.0 if entry.attribute.get(comp, False) else 0.0 for comp in COMPONENTS]
         return {
@@ -109,7 +109,7 @@ class DeepCoderEncoder(nn.Module):
     """
     def __init__(self, vocab_size, embedding_dimension, hidden_size, input_length):
         super(DeepCoderEncoder, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dimension, padding_idx = PAD_ID)
+        self.embed = nn.Embedding(vocab_size, embedding_dimension, padding_idx=PAD_ID)
         self.flat_dimension = input_length * embedding_dimension
         self.mlp = nn.Sequential(
             nn.Linear(self.flat_dimension, hidden_size),
@@ -183,28 +183,35 @@ def calculate_metrics(logits, labels):
     return f1, acc
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if tourch.cuda.is_available() else 'cpu')
-    print(f'Using device: {device}')
-
-    model_dir = Path("models/deepcoder_nn")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    current_script_path = Path(__file__).resolve()
+    project_root = current_script_path.parent.parent
+    
+    # dataset path: DeepCoder-Project/bickle100k.pickle
+    dataset_path = project_root / "bickle100k.pickle"
+    model_dir = current_script_path.parent / "models" / "deepcoder_modular_nn"
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Loading dataset...")
-    dataset_path = "dataset.pickle"
-    if not os.path.exists(dataset_path):
-        print(f"Error: {dataset_path} not found.")
+    print(f"Looking for dataset at: {dataset_path}")
+    
+    if not dataset_path.exists():
+        print(f"Error: Dataset not found at {dataset_path}")
         sys.exit(1)
 
+    print("Loading dataset...")
     with open(dataset_path, "rb") as f:
         d = pickle.load(f)
     all_data = d.dataset
+
+    print(f"Total entries loaded: {len(all_data)}")
     # seperate train and test set
     train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
 
-    train_dataset = DeepCoderDataset(train_entries, max_examples=MAX_EXAMPLES, example_max_len=EXAMPLE_MAX_LEN)
-    val_dataset = DeepCoderDataset(val_entries, max_examples=MAX_EXAMPLES, example_max_len=EXAMPLE_MAX_LEN)
+    train_dataset = DeepCoderDataset(train_entries, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
+    val_dataset = DeepCoderDataset(val_entries, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
 
-    batch_size = 32
+    batch_size = 64
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 

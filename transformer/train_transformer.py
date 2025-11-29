@@ -133,10 +133,26 @@ if __name__ == "__main__":
     model_dir = Path("models/deepcoder_transformer")
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Loading dataset...")
-    with open("dataset.pickle", "rb") as f:
+    print("Loading dataset (Bickle 100k)...")
+    dataset_path = "../bickle100k.pickle"
+    
+    if not os.path.exists(dataset_path):
+        if os.path.exists("bickle100k.pickle"):
+             dataset_path = "bickle100k.pickle"
+        else:
+            print(f"Error: Dataset not found at {dataset_path}")
+            print(f"Current working directory: {os.getcwd()}")
+            sys.exit(1)
+
+    with open(dataset_path, "rb") as f:
         d = pickle.load(f)
-    all_data = d.dataset
+    
+    if hasattr(d, "dataset"):
+        all_data = d.dataset
+    else:
+        all_data = d 
+
+    print(f"Total examples loaded")
     # seperate train and test set
     train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
     
@@ -154,8 +170,8 @@ if __name__ == "__main__":
         max_position_embeddings=512,
         num_labels=len(COMPONENTS),
         problem_type="multi_label_classification",
-        hidden_dropout_prob=0.0, 
-        attention_probs_dropout_prob=0.0,
+        hidden_dropout_prob=0.1, 
+        attention_probs_dropout_prob=0.1,
     )
 
     model = BertForSequenceClassification(config)
@@ -166,10 +182,10 @@ if __name__ == "__main__":
         output_dir=str(model_dir),
         per_device_train_batch_size=32,
         per_device_eval_batch_size=32,
-        learning_rate=1e-3,
-        num_train_epochs=60,
+        learning_rate=1e-4,
+        num_train_epochs=5,
+        logging_steps=500,
         weight_decay=0.01,
-        logging_steps=100,
         save_strategy="epoch",
         eval_strategy="epoch",
         load_best_model_at_end=True,
