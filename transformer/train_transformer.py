@@ -50,8 +50,8 @@ COMPONENTS = [
     "TAKE", "MAXIMUM", "DROP",
 ]
 
-INT_MIN = -512
-INT_MAX = 512
+INT_MIN = -256
+INT_MAX = 255
 VOCAB_OFFSET = 4
 
 # special token ID
@@ -60,6 +60,7 @@ SEP_ID = 1
 CLS_ID = 2
 UNK_ID = 3
 
+# vocabulary size
 VOCAB_SIZE = (INT_MAX - INT_MIN + 1) + VOCAB_OFFSET
 
 # tokenizer
@@ -136,7 +137,7 @@ def compute_metrics(prediction):
     return {"f1_micro": f1, "accuracy": accuracy_score(labels, predictions)}
 
 if __name__ == "__main__":
-    model_dir = Path("models/deepcoder_custom_transformer")
+    model_dir = Path("models/deepcoder_transformer")
     model_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading dataset...")

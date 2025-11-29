@@ -145,3 +145,142 @@ class DeepCoderDecoder(nn.Module):
     def __init__(self, hidden_size, num_classes):
         super(DeepCoderDecoder, self).__init__()
         self.classifier = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, encoder_features):
+        """
+        input: [batch_size, num_examples, hidden_size]
+        output: [batch_size, num_classes]
+        """
+        pooled_features, _ = torch.max(encoder_features, dim=1)
+
+        logits = self.classifier(pooled_features)
+        return logits
+    
+class DeepCoderModel(nn.Module):
+    """
+    The main model container that connects Encoder and Decoder.
+    """
+    def __init__(self, vocab_size, embedding_dim, hidden_size, num_classes, input_len):
+        super(DeepCoderModel, self).__init__()
+        
+        self.encoder = DeepCoderEncoder(vocab_size, embedding_dim, hidden_size, input_len)
+        self.decoder = DeepCoderDecoder(hidden_size, num_classes)
+        
+    def forward(self, x):
+        # encode the example features
+        encoded_features = self.encoder(x)
+        # pool and predict
+        logits = self.decoder(encoded_features)
+        return logits
+    
+def calculate_metrics(logits, labels):
+    probs = torch.sigmoid(logits)
+    probs_np = probs.detach().cpu().numpy()
+    labels_np = labels.detach().cpu().numpy()
+    preds = (probs_np > 0.5).astype(int)
+    f1 = f1_score(labels_np, preds, average='micro')
+    acc = accuracy_score(labels_np, preds) 
+    return f1, acc
+
+if __name__ == "__main__":
+    device = torch.device("cuda" if tourch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
+
+    model_dir = Path("models/deepcoder_nn")
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Loading dataset...")
+    dataset_path = "dataset.pickle"
+    if not os.path.exists(dataset_path):
+        print(f"Error: {dataset_path} not found.")
+        sys.exit(1)
+
+    with open(dataset_path, "rb") as f:
+        d = pickle.load(f)
+    all_data = d.dataset
+    # seperate train and test set
+    train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
+
+    train_dataset = DeepCoderDataset(train_entries, max_examples=MAX_EXAMPLES, example_max_len=EXAMPLE_MAX_LEN)
+    val_dataset = DeepCoderDataset(val_entries, max_examples=MAX_EXAMPLES, example_max_len=EXAMPLE_MAX_LEN)
+
+    batch_size = 32
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    print("Initializing Neural Network...")
+
+    model = DeepCoderModel(
+        vocab_size=VOCAB_SIZE, 
+        embedding_dim=EMBEDDING_DIM, 
+        hidden_size=HIDDEN_SIZE, 
+        num_classes=len(COMPONENTS),
+        input_len=EXAMPLE_MAX_LEN
+    ).to(device)
+
+    print(f"Model Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} Million")
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.BCEWithLogitsLoss()
+
+    epochs = 60
+    best_f1 = 0.0
+
+    print("Starting training...")
+    
+    for epoch in range(epochs):
+        # train
+        model.train()
+        total_loss = 0
+        
+        for batch in train_loader:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+            
+            optimizer.zero_grad()
+            logits = model(input_ids)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+        avg_train_loss = total_loss / len(train_loader)
+        
+        # validation
+        model.eval()
+        val_loss = 0
+        all_logits = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                input_ids = batch["input_ids"].to(device)
+                labels = batch["labels"].to(device)
+                
+                logits = model(input_ids)
+                loss = criterion(logits, labels)
+                
+                val_loss += loss.item()
+                all_logits.append(logits)
+                all_labels.append(labels)
+        
+        avg_val_loss = val_loss / len(val_loader)
+        
+        all_logits = torch.cat(all_logits)
+        all_labels = torch.cat(all_labels)
+        
+        val_f1, val_acc = calculate_metrics(all_logits, all_labels)
+        
+        print(f"Epoch: {epoch+1:02d} | "
+              f"Train Loss: {avg_train_loss:.4f} | "
+              f"Val Loss: {avg_val_loss:.4f} | "
+              f"Val F1: {val_f1:.4f} | "
+              f"Val Acc: {val_acc:.4f}")
+
+        if val_f1 > best_f1:
+            best_f1 = val_f1
+            torch.save(model.state_dict(), model_dir / "nn_model.pth")
+            print(f"new best model saved")
+
+    torch.save(model.state_dict(), model_dir / "nn_model.pth")
