@@ -12,7 +12,7 @@ from transformers import (
     TrainerCallback
 )
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, recall_score
 import numpy as np
 from pathlib import Path
 
@@ -23,21 +23,12 @@ class CleanPrinterCallback(TrainerCallback):
                 epoch = logs.get("epoch", 0)
                 val_loss = logs.get("eval_loss", 0)
                 f1 = logs.get("eval_f1_micro", 0)
-                acc = logs.get("eval_accuracy", 0) 
+                recall = logs.get("eval_recall_micro", 0)
 
-                print(f"Epoch: {epoch:.2f} | "
+                print(f"Epoch: {epoch:5.1f} | "
                       f"Val Loss: {val_loss:.4f} | "
-                      f"F1 Micro: {f1:.4f} | "
-                      f"Accuracy: {acc:.4f}")
-
-            elif "loss" in logs:
-                epoch = logs.get("epoch", 0)
-                train_loss = logs.get("loss", 0)
-                lr = logs.get("learning_rate", 0)
-
-                print(f"Epoch: {epoch:.2f} | "
-                      f"Train Loss: {train_loss:.4f} | "
-                      f"LR: {lr:.2e}")
+                      f"F1: {f1:.4f} | "
+                      f"Recall: {recall:.4f}")
 
 
 # components same as the successor in enumerative-search
@@ -132,9 +123,11 @@ class DeepCoderIntegerDataset(Dataset):
 def compute_metrics(prediction):
     logits, labels = prediction
     probs = 1 / (1 + np.exp(-logits))
+    
     predictions = (probs > 0.5).astype(int)
-    f1 = f1_score(labels, predictions, average='micro')
-    return {"f1_micro": f1, "accuracy": accuracy_score(labels, predictions)}
+    f1 = f1_score(labels, predictions, average='micro', zero_division=0)
+    recall = recall_score(labels, predictions, average='micro', zero_division=0)
+    return {"f1_micro": f1, "recall_micro": recall}
 
 if __name__ == "__main__":
     model_dir = Path("models/deepcoder_transformer")
