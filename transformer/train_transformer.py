@@ -34,7 +34,7 @@ class CleanPrinterCallback(TrainerCallback):
 # components same as the successor in enumerative-search
 COMPONENTS = [
     "ZIPWITH", "*", "MAP", "SQR", "MUL4", "DIV4", "-",
-    "MUL3", "DIV3", "MIN", "+", "SCANL", "SHR", "SHL",
+    "MUL3", "DIV3", "MIN", "+", "SCANL1", "SHR", "SHL",
     "MAX", "HEAD", "DEC", "SUM", "doNEG", "isNEG",
     "INC", "LAST", "MINIMUM", "isPOS", "SORT", "FILTER",
     "isODD", "REVERSE", "ACCESS", "isEVEN", "COUNT",

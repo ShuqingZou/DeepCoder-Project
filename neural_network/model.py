@@ -12,7 +12,7 @@ from pathlib import Path
 # components same as the successor in enumerative-search
 COMPONENTS = [
     "ZIPWITH", "*", "MAP", "SQR", "MUL4", "DIV4", "-",
-    "MUL3", "DIV3", "MIN", "+", "SCANL", "SHR", "SHL",
+    "MUL3", "DIV3", "MIN", "+", "SCANL1", "SHR", "SHL",
     "MAX", "HEAD", "DEC", "SUM", "doNEG", "isNEG",
     "INC", "LAST", "MINIMUM", "isPOS", "SORT", "FILTER",
     "isODD", "REVERSE", "ACCESS", "isEVEN", "COUNT",
@@ -204,7 +204,7 @@ if __name__ == "__main__":
         d = pickle.load(f)
     all_data = d.dataset
 
-    print(f"Total entries loaded: {len(all_data)}")
+    print(f"Total entries loaded")
     # seperate train and test set
     train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
 
