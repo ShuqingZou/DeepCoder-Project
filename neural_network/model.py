@@ -239,7 +239,7 @@ if __name__ == "__main__":
         
         elapsed = time.time() - start_time
 
-        print(f"{epoch+1:03d}/{num_epochs} | {avg_train_loss:.4f}     | {avg_test_loss:.4f}     | {val_f1:.4f}   | {val_acc:.4f}   | {elapsed:.0f}s")
+        print(f"{epoch+1} | {avg_train_loss:.4f}     | {avg_test_loss:.4f}     | {val_f1:.4f}   | {val_acc:.4f}   | {elapsed:.0f}s")
 
         save_name = model_path / f"epoch_{epoch+1}.pth"
         torch.save(model.state_dict(), save_name)
