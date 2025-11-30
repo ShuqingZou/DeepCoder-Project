@@ -1,4 +1,5 @@
 import pickle, sys, os
+import time
 sys.path.append(os.path.abspath(".."))
 import torch
 import torch.nn as nn
@@ -19,10 +20,10 @@ COMPONENTS = [
     "TAKE", "MAXIMUM", "DROP",
 ]
 
-# Integer range constraints (-256 to 255)
+# Integer range constraints
 INT_MIN = -256 
 INT_MAX = 255
-VOCAB_OFFSET = 2 # 0: PAD, 1: UNK
+VOCAB_OFFSET = 2
 
 # special token IDs
 PAD_ID = 0
@@ -49,16 +50,16 @@ def process_io_examples(example, max_length):
     inp_val = example.inputs
     out_val = example.output
 
-    if isinstance(inp_val, list):
+    if isinstance(inp_val, tuple):
         for x in inp_val:
-            if isinstance(x, list):
+            if isinstance(x, tuple):
                 input_ids.extend([encode_integer(i) for i in x])
             else:
                 input_ids.append(encode_integer(x))
     else:
         input_ids.append(encode_integer(inp_val))
 
-    if isinstance(out_val, list):
+    if isinstance(out_val, tuple):
         input_ids.extend([encode_integer(x) for x in out_val])
     else:
         input_ids.append(encode_integer(out_val))
@@ -67,52 +68,51 @@ def process_io_examples(example, max_length):
 
     padding_len = max_length - len(input_ids)
     if padding_len > 0:
-        input_ids = input_ids + [PAD_ID] * padding_len
-        
+        input_ids = input_ids + [PAD_ID] * padding_len      
     return input_ids
 
+def calculate_score(logits, labels):
+    probs = torch.sigmoid(logits)
+    preds = (probs > 0.5).float()
+    preds_np = preds.detach().cpu().numpy()
+    labels_np = labels.detach().cpu().numpy()
+    f1 = f1_score(labels_np, preds_np, average='micro')
+    acc = accuracy_score(labels_np, preds_np)
+    return f1, acc
+
 class DeepCoderDataset(Dataset):
-    def __init__(self, dataset_entries, max_examples = 5, max_length = 20):
-        self.entries = dataset_entries
+    def __init__(self, dataset, max_examples = 5, max_length = 20):
+        self.dataset = dataset
         self.max_examples = max_examples
         self.max_length = max_length
 
     def __len__(self):
-        return len(self.entries)
-    
+        return len(self.dataset)
+
     def __getitem__(self, idx):
-        entry = self.entries[idx]
-        examples_matrix = []
-        cur_example = entry.examples[:self.max_examples]
-        for example in cur_example:
-            encode_example = process_io_examples(example, self.max_length)
-            examples_matrix.append(encode_example)
-
-        # if fewer than MAX_EXAMPLES
-        while len(examples_matrix) < self.max_examples:
-            examples_matrix.append([PAD_ID] * self.max_length)
-
-        labels = [1.0 if entry.attribute.get(comp, False) else 0.0 for comp in COMPONENTS]
+        dataset = self.dataset[idx]
+        processed_examples = []
+        cur_examples = dataset.examples[:self.max_examples]
+        for example in cur_examples:
+            processed_example = process_io_examples(example, self.max_length)
+            processed_examples.append(processed_example)
+        while len(processed_examples) < self.max_examples:
+            processed_examples.append([PAD_ID] * self.max_length)
+        labels = [1.0 if dataset.attribute.get(comp, False) else 0.0 for comp in COMPONENTS]
         return {
             # tensor shape (5, 20)
-            "input_ids": torch.tensor(examples_matrix, dtype = torch.long), 
-            # tensor shape (Num_Components)
+            "examples": torch.tensor(processed_examples, dtype = torch.long), 
+            # tensor shape (omponents true/false)
             "labels": torch.tensor(labels, dtype = torch.float),
         }
     
 class DeepCoderEncoder(nn.Module):
-    """
-    The Encoder is responsible for:
-    1. embedding the input integers.
-    2. flattening the sequence of embeddings.
-    3. running MLP on each example independently.
-    """
-    def __init__(self, vocab_size, embedding_dimension, hidden_size, input_length):
+    def __init__(self, num_embeddings, embedding_dim, hidden_size, input_length):
         super(DeepCoderEncoder, self).__init__()
-        self.embed = nn.Embedding(vocab_size, embedding_dimension, padding_idx=PAD_ID)
-        self.flat_dimension = input_length * embedding_dimension
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx = PAD_ID)
+        self.flat_dim = input_length * embedding_dim
         self.mlp = nn.Sequential(
-            nn.Linear(self.flat_dimension, hidden_size),
+            nn.Linear(self.flat_dim, hidden_size),
             nn.Sigmoid(),
             nn.Linear(hidden_size, hidden_size),
             nn.Sigmoid(),
@@ -121,173 +121,127 @@ class DeepCoderEncoder(nn.Module):
         )
 
     def forward(self, x):
-        batch_size = x.size(0)
-        num_examples = x.size(1)
-        
-        # [Batch, M, L] -> [Batch, M, L, Emb]
-        x_emb = self.embed(x)
-        
-        # [Batch, M, L * Emb]
-        x_flat = x_emb.view(batch_size, num_examples, -1)
+        batch_size = x.size(0) #64
+        num_examples = x.size(1) #5
+        # [batch, 5, 20] -> [batch, 5, 20, 20]
+        x = self.embedding(x)
+        # [batch, 5, 20, 20] -> [batch, 5, 400]
+        x = x.view(batch_size, num_examples, -1)
+        # [64, 5, 400] -> [320, 400]
+        x = x.view(batch_size * num_examples, -1)
+        # [320, 400] -> [320, 256]
+        x = self.mlp(x)
+        # [320, 256] -> [64, 5, 256]
+        x = x.view(batch_size, num_examples, -1)
+        return x
 
-        # [Batch * M, L * Emb]
-        x_merged = x_flat.view(batch_size * num_examples, -1)
-
-        # [Batch * M, Hidden]
-        encoded_flat = self.mlp(x_merged)
-
-        # [Batch, M, Hidden]
-        encoded_features = encoded_flat.view(batch_size, num_examples, -1)
-        
-        return encoded_features
-    
 class DeepCoderDecoder(nn.Module):
     def __init__(self, hidden_size, num_classes):
         super(DeepCoderDecoder, self).__init__()
         self.classifier = nn.Linear(hidden_size, num_classes)
 
     def forward(self, encoder_features):
-        """
-        input: [batch_size, num_examples, hidden_size]
-        output: [batch_size, num_classes]
-        """
         pooled_features, _ = torch.max(encoder_features, dim=1)
-
         logits = self.classifier(pooled_features)
+        
         return logits
     
 class DeepCoderModel(nn.Module):
-    """
-    The main model container that connects Encoder and Decoder.
-    """
-    def __init__(self, vocab_size, embedding_dim, hidden_size, num_classes, input_len):
+    def __init__(self, num_embeddings, embedding_dim, hidden_size, input_length, num_classes):
         super(DeepCoderModel, self).__init__()
-        
-        self.encoder = DeepCoderEncoder(vocab_size, embedding_dim, hidden_size, input_len)
+        self.encoder = DeepCoderEncoder(num_embeddings, embedding_dim, hidden_size, input_length)
         self.decoder = DeepCoderDecoder(hidden_size, num_classes)
-        
     def forward(self, x):
-        # encode the example features
         encoded_features = self.encoder(x)
-        # pool and predict
         logits = self.decoder(encoded_features)
         return logits
-    
-def calculate_metrics(logits, labels):
-    probs = torch.sigmoid(logits)
-    probs_np = probs.detach().cpu().numpy()
-    labels_np = labels.detach().cpu().numpy()
-    preds = (probs_np > 0.5).astype(int)
-    f1 = f1_score(labels_np, preds, average='micro')
-    acc = accuracy_score(labels_np, preds) 
-    return f1, acc
 
+    
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     current_script_path = Path(__file__).resolve()
     project_root = current_script_path.parent.parent
-    
-    # dataset path: DeepCoder-Project/bickle100k.pickle
+
     dataset_path = project_root / "bickle100k.pickle"
-    model_dir = current_script_path.parent / "models" / "deepcoder_modular_nn"
-    model_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Looking for dataset at: {dataset_path}")
-    
-    if not dataset_path.exists():
-        print(f"Error: Dataset not found at {dataset_path}")
-        sys.exit(1)
-
+    model_path = current_script_path / "models"
     print("Loading dataset...")
     with open(dataset_path, "rb") as f:
         d = pickle.load(f)
-    all_data = d.dataset
+    if hasattr(d, "dataset"):
+        all_data = list(d.dataset)
+    else:
+        all_data = d 
 
-    print(f"Total entries loaded")
+    print(f"Total dataset loaded")
+
     # seperate train and test set
-    train_entries, val_entries = train_test_split(all_data, test_size=0.1, random_state=42)
+    train_dataset, test_dataset = train_test_split(all_data, test_size=0.1, random_state=42)
 
-    train_dataset = DeepCoderDataset(train_entries, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
-    val_dataset = DeepCoderDataset(val_entries, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
-
+    processed_train_data = DeepCoderDataset(train_dataset, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
+    processed_test_data = DeepCoderDataset(test_dataset, max_examples=MAX_EXAMPLES, max_length=EXAMPLE_MAX_LEN)
+    
     batch_size = 64
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    print("Initializing Neural Network...")
+    train_loader = DataLoader(processed_train_data, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(processed_test_data, batch_size=batch_size, shuffle=False)
 
     model = DeepCoderModel(
-        vocab_size=VOCAB_SIZE, 
-        embedding_dim=EMBEDDING_DIM, 
-        hidden_size=HIDDEN_SIZE, 
-        num_classes=len(COMPONENTS),
-        input_len=EXAMPLE_MAX_LEN
+        num_embeddings=VOCAB_SIZE,
+        embedding_dim=EMBEDDING_DIM,
+        hidden_size=HIDDEN_SIZE,
+        input_length=EXAMPLE_MAX_LEN,
+        num_classes=len(COMPONENTS)
     ).to(device)
 
-    print(f"Model Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} Million")
-
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-    epochs = 60
-    best_f1 = 0.0
-
-    print("Starting training...")
-    
-    for epoch in range(epochs):
-        # train
+    # train
+    num_epochs = 50
+    for epoch in range(num_epochs):
+        start_time = time.time()
         model.train()
-        total_loss = 0
-        
+        total_train_loss = 0.0
         for batch in train_loader:
-            input_ids = batch["input_ids"].to(device)
+            inputs = batch["examples"].to(device)
             labels = batch["labels"].to(device)
-            
             optimizer.zero_grad()
-            logits = model(input_ids)
+            logits = model(inputs)
             loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
+            total_train_loss += loss.item()
             
-            total_loss += loss.item()
-            
-        avg_train_loss = total_loss / len(train_loader)
-        
-        # validation
+        avg_train_loss = total_train_loss / len(train_loader)
+
+        #test
         model.eval()
-        val_loss = 0
+        total_test_loss = 0.0
         all_logits = []
         all_labels = []
         
         with torch.no_grad():
-            for batch in val_loader:
-                input_ids = batch["input_ids"].to(device)
+            for batch in test_loader:
+                inputs = batch["examples"].to(device)
                 labels = batch["labels"].to(device)
                 
-                logits = model(input_ids)
+                logits = model(inputs)
                 loss = criterion(logits, labels)
                 
-                val_loss += loss.item()
+                total_test_loss += loss.item()
                 all_logits.append(logits)
                 all_labels.append(labels)
         
-        avg_val_loss = val_loss / len(val_loader)
-        
+        avg_test_loss = total_test_loss / len(test_loader)
         all_logits = torch.cat(all_logits)
         all_labels = torch.cat(all_labels)
+        val_f1, val_acc = calculate_score(all_logits, all_labels)
         
-        val_f1, val_acc = calculate_metrics(all_logits, all_labels)
-        
-        print(f"Epoch: {epoch+1:02d} | "
-              f"Train Loss: {avg_train_loss:.4f} | "
-              f"Val Loss: {avg_val_loss:.4f} | "
-              f"Val F1: {val_f1:.4f} | "
-              f"Val Acc: {val_acc:.4f}")
+        elapsed = time.time() - start_time
 
-        if val_f1 > best_f1:
-            best_f1 = val_f1
-            torch.save(model.state_dict(), model_dir / "nn_model.pth")
-            print(f"new best model saved")
+        print(f"{epoch+1:03d}/{num_epochs} | {avg_train_loss:.4f}     | {avg_test_loss:.4f}     | {val_f1:.4f}   | {val_acc:.4f}   | {elapsed:.0f}s")
 
-    torch.save(model.state_dict(), model_dir / "nn_model.pth")
+        save_name = model_path / f"epoch_{epoch+1}.pth"
+        torch.save(model.state_dict(), save_name)
+
+    print("models saved")
